@@ -70,8 +70,8 @@ def fetch_news(count: int = 15) -> list:
             {
                 "gid": ev.get("gid"),
                 "title": ev.get("event_name") or body.get("headline") or "Обновление Dota 2",
-                "contents": body.get("body", ""),
-                "date": body.get("posttime", ev.get("rtime32_last_modified", time.time())),
+                "contents": body.get("body", "") or "",
+                "date": body.get("posttime") or ev.get("rtime32_last_modified") or time.time(),
                 "url": f"https://steamcommunity.com/games/{APP_ID}/announcements/detail/{ev.get('gid')}",
             }
         )
@@ -119,7 +119,12 @@ def main() -> None:
     state = load_state()
     sent_gids = set(state.get("sent_gids", []))
 
-    news_items = fetch_news()
+    try:
+        news_items = fetch_news()
+    except Exception as exc:  # noqa: BLE001
+        print(f"Не удалось получить новости от Steam: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     if not news_items:
         print("Новостей не найдено.")
         return
@@ -134,14 +139,23 @@ def main() -> None:
         return
 
     for item in new_items:
-        print(f"Отправляю: {item.get('title')}")
-        send_to_discord(item)
+        try:
+            print(f"Отправляю: {item.get('title')}")
+            send_to_discord(item)
+        except Exception as exc:  # noqa: BLE001 — нужно поймать любую ошибку сети/Discord
+            print(f"Не удалось отправить '{item.get('title')}': {exc}", file=sys.stderr)
+            # сохраняем то, что уже успели отправить, и завершаемся с ошибкой,
+            # чтобы GitHub Actions пометил запуск как неудачный
+            state["sent_gids"] = list(sent_gids)
+            save_state(state)
+            sys.exit(1)
+
         sent_gids.add(str(item.get("gid")))
+        state["sent_gids"] = list(sent_gids)
+        state["last_gid"] = item.get("gid")
+        save_state(state)  # сохраняем сразу после каждой успешной отправки
         time.sleep(1)  # небольшая пауза, чтобы не словить rate limit
 
-    state["sent_gids"] = list(sent_gids)
-    state["last_gid"] = new_items[-1].get("gid")
-    save_state(state)
     print(f"Готово, отправлено новых записей: {len(new_items)}")
 
 
