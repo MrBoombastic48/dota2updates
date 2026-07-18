@@ -1,0 +1,38 @@
+name: Dota 2 Discord Watcher
+
+on:
+  schedule:
+    # каждые 15 минут (GitHub может немного задерживать запуск в моменты пиковой нагрузки)
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}  # позволяет запустить вручную кнопкой "Run workflow"
+
+permissions:
+  contents: write  # нужно, чтобы коммитить state.json обратно в репозиторий
+
+jobs:
+  check-updates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run watcher
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python dota_watcher.py
+
+      - name: Commit updated state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git diff --staged --quiet || git commit -m "chore: update state.json [skip ci]"
+          git push
