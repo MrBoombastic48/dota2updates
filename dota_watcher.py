@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """
-Следит за новостями/обновлениями Dota 2 через Steam News API
-и отправляет новые записи в Discord через webhook.
+Следит за официальными патчноутами Dota 2 и отправляет новые записи в Discord
+через webhook.
 
-Состояние (id последней отправленной новости) хранится в файле state.json,
+Источник данных — тот же самый официальный эндпоинт Steam (partner events),
+которым пользуется сам SteamDB для формирования страницы
+https://steamdb.info/app/570/patchnotes/. Мы не скрапим HTML steamdb.info
+(это запрещено их условиями использования и защищено от ботов), а берём
+данные напрямую у Valve в чистом JSON — событие с event_type 12 (small
+update) или 13 (major update) и тегом "patchnotes" это и есть официальные
+патчноуты, а не любые посты комьюнити (распродажи, мерч и т.п.).
+
+Состояние (id уже отправленных записей) хранится в файле state.json,
 который коммитится обратно в репозиторий GitHub Actions'ом.
 """
 
@@ -16,7 +24,7 @@ from pathlib import Path
 import requests
 
 APP_ID = 570  # Dota 2
-STEAM_NEWS_URL = "https://api.steampowered.com/ISteamNews/GetNewsForApp/v0002/"
+PARTNER_EVENTS_URL = "https://store.steampowered.com/events/ajaxgetadjacentpartnerevents/"
 STATE_FILE = Path(__file__).parent / "state.json"
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -37,17 +45,37 @@ def save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def fetch_news(count: int = 10) -> list:
+def fetch_news(count: int = 15) -> list:
     params = {
         "appid": APP_ID,
-        "count": count,
-        "maxlength": 500,  # обрежем текст, полный текст всё равно смотреть по ссылке
-        "format": "json",
+        "count_before": 0,
+        "count_after": count,
+        # event_type 12 = small update, 13 = major update — это и есть патчноуты
+        "event_type_filter": "12,13",
     }
-    resp = requests.get(STEAM_NEWS_URL, params=params, timeout=20)
+    resp = requests.get(PARTNER_EVENTS_URL, params=params, timeout=20)
     resp.raise_for_status()
     data = resp.json()
-    return data.get("appnews", {}).get("newsitems", [])
+    events = data.get("events", [])
+
+    items = []
+    for ev in events:
+        body = ev.get("announcement_body", {}) or {}
+        # оставляем только настоящие патчноуты (на всякий случай, фильтр event_type
+        # уже должен был это сделать, но тег надёжнее)
+        tags = body.get("tags", [])
+        if "patchnotes" not in tags:
+            continue
+        items.append(
+            {
+                "gid": ev.get("gid"),
+                "title": ev.get("event_name") or body.get("headline") or "Обновление Dota 2",
+                "contents": body.get("body", ""),
+                "date": body.get("posttime", ev.get("rtime32_last_modified", time.time())),
+                "url": f"https://steamcommunity.com/games/{APP_ID}/announcements/detail/{ev.get('gid')}",
+            }
+        )
+    return items
 
 
 def clean_contents(text: str) -> str:
@@ -71,7 +99,7 @@ def send_to_discord(item: dict) -> None:
         "timestamp": time.strftime(
             "%Y-%m-%dT%H:%M:%S", time.gmtime(item.get("date", time.time()))
         ),
-        "footer": {"text": item.get("feedlabel", "Steam News")},
+        "footer": {"text": "Dota 2 Patch Notes"},
     }
     payload = {
         "username": "Dota 2 Updates",
